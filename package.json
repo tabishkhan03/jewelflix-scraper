@@ -1,0 +1,25 @@
+{
+  "name": "jewelflix-scraper",
+  "version": "1.0.0",
+  "description": "Scraper for Jewelflix customer cart and wishlist data",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "node test-scraper.js",
+    "test:cart": "curl -X POST http://localhost:3000/api/cart/limited -H 'Content-Type: application/json' -d '{\"customerIds\": [\"344507\"]}'",
+    "test:wishlist": "curl -X POST http://localhost:3000/api/wishlist/limited -H 'Content-Type: application/json' -d '{\"limit\": 2}'",
+    "health": "curl http://localhost:3000/health"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "mongoose": "^7.6.3",
+    "puppeteer": "^22.8.2",
+    "dotenv": "^16.3.1",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
