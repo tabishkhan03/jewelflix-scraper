@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const BASE_URL = 'https://seller.jewelflix.com';
-const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME;
+const SESSION_COOKIE_NAME = 'remember_web_59ba36addc2b2f9401580f014c7f58ea4e30989d';
 const SESSION_COOKIE_VALUE = process.env.SESSION_COOKIE;
 
 // Configuration from environment variables
@@ -67,12 +67,13 @@ class ProgressTracker {
   }
 }
 
-// Browser pool for better resource management
+// Improved Browser pool for better resource management
 class BrowserPool {
   constructor(size = MAX_CONCURRENT_PAGES) {
     this.browsers = [];
     this.size = size;
     this.currentIndex = 0;
+    this.isClosing = false;
   }
 
   async initialize() {
@@ -83,8 +84,15 @@ class BrowserPool {
       browserPromises.push(this.createBrowser());
     }
     
-    this.browsers = await Promise.all(browserPromises);
-    console.log(`✅ Browser pool initialized with ${this.browsers.length} browsers`);
+    try {
+      this.browsers = await Promise.all(browserPromises);
+      console.log(`✅ Browser pool initialized with ${this.browsers.length} browsers`);
+    } catch (error) {
+      console.error('❌ Failed to initialize browser pool:', error);
+      // Clean up any browsers that were created
+      await this.close();
+      throw error;
+    }
   }
 
   async createBrowser() {
@@ -96,7 +104,6 @@ class BrowserPool {
         '--disable-dev-shm-usage',
         '--disable-web-security',
         '--disable-images',
-        '--disable-javascript', // Only if site doesn't need JS
         '--disable-css',
         '--disable-plugins',
         '--disable-extensions',
@@ -114,14 +121,31 @@ class BrowserPool {
   }
 
   getBrowser() {
+    if (this.isClosing || this.browsers.length === 0) {
+      throw new Error('Browser pool is closed or not initialized');
+    }
     const browser = this.browsers[this.currentIndex];
     this.currentIndex = (this.currentIndex + 1) % this.browsers.length;
     return browser;
   }
 
   async close() {
+    if (this.isClosing) return;
+    this.isClosing = true;
+    
     console.log('🔧 Closing browser pool...');
-    await Promise.all(this.browsers.map(browser => browser.close()));
+    const closePromises = this.browsers.map(async (browser) => {
+      try {
+        if (browser && browser.isConnected()) {
+          await browser.close();
+        }
+      } catch (error) {
+        console.warn('⚠️ Error closing browser:', error.message);
+      }
+    });
+    
+    await Promise.allSettled(closePromises);
+    this.browsers = [];
     console.log('✅ Browser pool closed');
   }
 }
@@ -141,7 +165,7 @@ export async function setSessionCookie(page) {
 
   if (process.env.LARAVEL_SESSION_COOKIE) {
     cookies.push({
-      name: 'laravel_session',
+      name: process.env.LARAVEL_SESSION_COOKIE_NAME,
       value: process.env.LARAVEL_SESSION_COOKIE,
       domain: 'seller.jewelflix.com',
       path: '/',
@@ -153,44 +177,78 @@ export async function setSessionCookie(page) {
   await page.setCookie(...cookies);
 }
 
-// --- Helper: Setup optimized page ---
+// --- Helper: Setup optimized page with better error handling ---
 async function setupPage(browser) {
+  if (!browser || !browser.isConnected()) {
+    throw new Error('Browser is not connected');
+  }
+
   const page = await browser.newPage();
-  await setSessionCookie(page);
   
-  // Optimize page settings
-  await page.setViewport({ width: 1280, height: 720 });
-  await page.setRequestInterception(true);
-  
-  // Block unnecessary resources more aggressively
-  page.on('request', (req) => {
-    const resourceType = req.resourceType();
-    const url = req.url();
+  try {
+    await setSessionCookie(page);
     
-    if (
-      resourceType === 'image' || 
-      resourceType === 'stylesheet' || 
-      resourceType === 'font' ||
-      resourceType === 'media' ||
-      url.includes('google-analytics') ||
-      url.includes('facebook') ||
-      url.includes('twitter') ||
-      url.includes('.css') ||
-      url.includes('.jpg') ||
-      url.includes('.png') ||
-      url.includes('.gif')
-    ) {
-      req.abort();
-    } else {
-      req.continue();
+    // Optimize page settings
+    await page.setViewport({ width: 1280, height: 720 });
+    await page.setRequestInterception(true);
+    
+    // Block unnecessary resources more aggressively
+    page.on('request', (req) => {
+      if (page.isClosed()) {
+        return;
+      }
+      
+      const resourceType = req.resourceType();
+      const url = req.url();
+      
+      if (
+        resourceType === 'image' || 
+        resourceType === 'stylesheet' || 
+        resourceType === 'font' ||
+        resourceType === 'media' ||
+        url.includes('google-analytics') ||
+        url.includes('facebook') ||
+        url.includes('twitter') ||
+        url.includes('.css') ||
+        url.includes('.jpg') ||
+        url.includes('.png') ||
+        url.includes('.gif')
+      ) {
+        req.abort().catch(() => {});
+      } else {
+        req.continue().catch(() => {});
+      }
+    });
+    
+    // Set shorter timeouts
+    page.setDefaultTimeout(PAGE_TIMEOUT);
+    page.setDefaultNavigationTimeout(PAGE_TIMEOUT);
+    
+    return page;
+  } catch (error) {
+    // Clean up page if setup fails
+    try {
+      if (!page.isClosed()) {
+        await page.close();
+      }
+    } catch (closeError) {
+      console.warn('⚠️ Error closing page during setup failure:', closeError.message);
     }
-  });
+    throw error;
+  }
+}
+
+// --- Helper: Safe page closure ---
+async function safeClosePage(page) {
+  if (!page) return;
   
-  // Set shorter timeouts
-  page.setDefaultTimeout(PAGE_TIMEOUT);
-  page.setDefaultNavigationTimeout(PAGE_TIMEOUT);
-  
-  return page;
+  try {
+    if (!page.isClosed()) {
+      await page.close();
+    }
+  } catch (error) {
+    console.warn('⚠️ Error closing page:', error.message);
+  }
 }
 
 // --- Helper: Get customer IDs with caching ---
@@ -241,7 +299,7 @@ async function getCustomerIds(page, type) {
   }
 }
 
-// --- Optimized customer data scraper ---
+// --- Optimized customer data scraper with better error handling ---
 async function scrapeCustomerData(browser, customerId, type, retries = 2) {
   let page;
   try {
@@ -308,7 +366,7 @@ async function scrapeCustomerData(browser, customerId, type, retries = 2) {
     };
     
   } catch (error) {
-    if (retries > 0) {
+    if (retries > 0 && !error.message.includes('Protocol error')) {
       console.log(`🔄 Retrying customer ${customerId} (${retries} retries left)`);
       await delay(1000);
       return await scrapeCustomerData(browser, customerId, type, retries - 1);
@@ -316,22 +374,29 @@ async function scrapeCustomerData(browser, customerId, type, retries = 2) {
     console.error(`❌ Failed to scrape ${type} for customer ${customerId}:`, error.message);
     return null;
   } finally {
-    if (page) {
-      await page.close();
-    }
+    await safeClosePage(page);
   }
 }
 
 // --- Batch processor with progress tracking ---
 async function processBatch(browserPool, customerIds, type, progress) {
   const promises = customerIds.map(async (customerId) => {
-    const browser = browserPool.getBrowser();
-    const result = await scrapeCustomerData(browser, customerId, type);
-    progress.update(result !== null);
-    return result;
+    try {
+      const browser = browserPool.getBrowser();
+      const result = await scrapeCustomerData(browser, customerId, type);
+      progress.update(result !== null);
+      return result;
+    } catch (error) {
+      console.error(`❌ Error processing customer ${customerId}:`, error.message);
+      progress.update(false);
+      return null;
+    }
   });
 
-  return await Promise.all(promises);
+  const results = await Promise.allSettled(promises);
+  return results
+    .filter(result => result.status === 'fulfilled' && result.value !== null)
+    .map(result => result.value);
 }
 
 // --- Main scraping functions ---
@@ -346,8 +411,11 @@ export async function scrapeCartForCustomers(limit = null, specificCustomerId = 
       customerIds = [specificCustomerId];
     } else {
       const page = await setupPage(browserPool.getBrowser());
-      customerIds = await getCustomerIds(page, 'cart');
-      await page.close();
+      try {
+        customerIds = await getCustomerIds(page, 'cart');
+      } finally {
+        await safeClosePage(page);
+      }
       
       if (limit) customerIds = customerIds.slice(0, limit);
     }
@@ -363,7 +431,7 @@ export async function scrapeCartForCustomers(limit = null, specificCustomerId = 
       console.log(`📦 Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(customerIds.length / BATCH_SIZE)} (${batch.length} customers)`);
       
       const batchResults = await processBatch(browserPool, batch, 'cart', progress);
-      results.push(...batchResults.filter(result => result !== null));
+      results.push(...batchResults);
       
       // Small delay between batches to prevent overwhelming the server
       if (i + BATCH_SIZE < customerIds.length) {
@@ -390,8 +458,11 @@ export async function scrapeWishlistForCustomers(limit = null, specificCustomerI
       customerIds = [specificCustomerId];
     } else {
       const page = await setupPage(browserPool.getBrowser());
-      customerIds = await getCustomerIds(page, 'wishlist');
-      await page.close();
+      try {
+        customerIds = await getCustomerIds(page, 'wishlist');
+      } finally {
+        await safeClosePage(page);
+      }
       
       if (limit) customerIds = customerIds.slice(0, limit);
     }
@@ -406,7 +477,7 @@ export async function scrapeWishlistForCustomers(limit = null, specificCustomerI
       console.log(`📦 Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(customerIds.length / BATCH_SIZE)} (${batch.length} customers)`);
       
       const batchResults = await processBatch(browserPool, batch, 'wishlist', progress);
-      results.push(...batchResults.filter(result => result !== null));
+      results.push(...batchResults);
       
       if (i + BATCH_SIZE < customerIds.length) {
         await delay(DELAY_BETWEEN_BATCHES);
@@ -435,12 +506,20 @@ export async function scrapeBothForCustomers(customerIds = null, limit = null) {
       const page1 = await setupPage(browserPool.getBrowser());
       const page2 = await setupPage(browserPool.getBrowser());
       
-      const [cartIds, wishlistIds] = await Promise.all([
-        getCustomerIds(page1, 'cart'),
-        getCustomerIds(page2, 'wishlist')
-      ]);
+      let cartIds = [];
+      let wishlistIds = [];
       
-      await Promise.all([page1.close(), page2.close()]);
+      try {
+        [cartIds, wishlistIds] = await Promise.all([
+          getCustomerIds(page1, 'cart'),
+          getCustomerIds(page2, 'wishlist')
+        ]);
+      } finally {
+        await Promise.all([
+          safeClosePage(page1),
+          safeClosePage(page2)
+        ]);
+      }
       
       const allIds = [...new Set([...cartIds, ...wishlistIds])];
       ids = limit ? allIds.slice(0, limit) : allIds;
@@ -456,31 +535,44 @@ export async function scrapeBothForCustomers(customerIds = null, limit = null) {
       console.log(`📦 Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(ids.length / BATCH_SIZE)} (${batch.length} customers)`);
       
       const batchPromises = batch.map(async (customerId) => {
-        const browser1 = browserPool.getBrowser();
-        const browser2 = browserPool.getBrowser();
-        
-        const [cartData, wishlistData] = await Promise.all([
-          scrapeCustomerData(browser1, customerId, 'cart'),
-          scrapeCustomerData(browser2, customerId, 'wishlist')
-        ]);
-        
-        progress.update(cartData !== null || wishlistData !== null);
-        
-        if (cartData && wishlistData) {
-          return {
-            customerId: cartData.customerId,
-            customerName: cartData.customerName || wishlistData.customerName,
-            customerNumber: cartData.customerNumber || wishlistData.customerNumber,
-            cart: cartData.cart,
-            wishlist: wishlistData.wishlist
-          };
+        try {
+          const browser1 = browserPool.getBrowser();
+          const browser2 = browserPool.getBrowser();
+          
+          const [cartData, wishlistData] = await Promise.allSettled([
+            scrapeCustomerData(browser1, customerId, 'cart'),
+            scrapeCustomerData(browser2, customerId, 'wishlist')
+          ]);
+          
+          const cartResult = cartData.status === 'fulfilled' ? cartData.value : null;
+          const wishlistResult = wishlistData.status === 'fulfilled' ? wishlistData.value : null;
+          
+          progress.update(cartResult !== null || wishlistResult !== null);
+          
+          if (cartResult && wishlistResult) {
+            return {
+              customerId: cartResult.customerId,
+              customerName: cartResult.customerName || wishlistResult.customerName,
+              customerNumber: cartResult.customerNumber || wishlistResult.customerNumber,
+              cart: cartResult.cart,
+              wishlist: wishlistResult.wishlist
+            };
+          }
+          
+          return cartResult || wishlistResult;
+        } catch (error) {
+          console.error(`❌ Error processing customer ${customerId}:`, error.message);
+          progress.update(false);
+          return null;
         }
-        
-        return cartData || wishlistData;
       });
       
-      const batchResults = await Promise.all(batchPromises);
-      results.push(...batchResults.filter(result => result !== null));
+      const batchResults = await Promise.allSettled(batchPromises);
+      const validResults = batchResults
+        .filter(result => result.status === 'fulfilled' && result.value !== null)
+        .map(result => result.value);
+      
+      results.push(...validResults);
       
       if (i + BATCH_SIZE < ids.length) {
         await delay(DELAY_BETWEEN_BATCHES);
