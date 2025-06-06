@@ -3,11 +3,128 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const BASE_URL = 'https://seller.jewelflix.com';
-const SESSION_COOKIE_NAME = 'remember_web_59ba36addc2b2f9401580f014c7f58ea4e30989d';
+const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME;
 const SESSION_COOKIE_VALUE = process.env.SESSION_COOKIE;
+
+// Configuration from environment variables
+const BATCH_SIZE = parseInt(process.env.SCRAPER_BATCH_SIZE) || 50;
+const MAX_CONCURRENT_PAGES = parseInt(process.env.MAX_CONCURRENT_PAGES) || 10;
+const DELAY_BETWEEN_BATCHES = parseInt(process.env.DELAY_BETWEEN_BATCHES) || 100;
+const PAGE_TIMEOUT = parseInt(process.env.PAGE_TIMEOUT) || 10000;
+
+console.log(`🚀 Scraper Configuration:`);
+console.log(`   Batch Size: ${BATCH_SIZE}`);
+console.log(`   Max Concurrent Pages: ${MAX_CONCURRENT_PAGES}`);
+console.log(`   Delay Between Batches: ${DELAY_BETWEEN_BATCHES}ms`);
+console.log(`   Page Timeout: ${PAGE_TIMEOUT}ms`);
 
 // Helper function for delay
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Progress tracker class
+class ProgressTracker {
+  constructor(total, operation) {
+    this.total = total;
+    this.completed = 0;
+    this.failed = 0;
+    this.operation = operation;
+    this.startTime = Date.now();
+    this.lastUpdate = Date.now();
+  }
+
+  update(success = true) {
+    if (success) {
+      this.completed++;
+    } else {
+      this.failed++;
+    }
+
+    const now = Date.now();
+    // Update console every 2 seconds or when batch completes
+    if (now - this.lastUpdate > 2000 || (this.completed + this.failed) % BATCH_SIZE === 0) {
+      this.logProgress();
+      this.lastUpdate = now;
+    }
+  }
+
+  logProgress() {
+    const processed = this.completed + this.failed;
+    const percentage = ((processed / this.total) * 100).toFixed(1);
+    const elapsed = ((Date.now() - this.startTime) / 1000).toFixed(1);
+    const rate = (processed / (elapsed || 1)).toFixed(2);
+    const eta = processed > 0 ? (((this.total - processed) / rate)).toFixed(0) : '?';
+
+    console.log(`📊 ${this.operation} Progress: ${processed}/${this.total} (${percentage}%) | ✅ ${this.completed} ❌ ${this.failed} | Rate: ${rate}/s | ETA: ${eta}s`);
+  }
+
+  finish() {
+    const elapsed = ((Date.now() - this.startTime) / 1000).toFixed(1);
+    const rate = (this.completed / (elapsed || 1)).toFixed(2);
+    console.log(`🎉 ${this.operation} Complete: ${this.completed}/${this.total} successful in ${elapsed}s (${rate}/s)`);
+    if (this.failed > 0) {
+      console.log(`⚠️  ${this.failed} items failed to process`);
+    }
+  }
+}
+
+// Browser pool for better resource management
+class BrowserPool {
+  constructor(size = MAX_CONCURRENT_PAGES) {
+    this.browsers = [];
+    this.size = size;
+    this.currentIndex = 0;
+  }
+
+  async initialize() {
+    console.log(`🔧 Initializing browser pool with ${this.size} browsers...`);
+    const browserPromises = [];
+    
+    for (let i = 0; i < this.size; i++) {
+      browserPromises.push(this.createBrowser());
+    }
+    
+    this.browsers = await Promise.all(browserPromises);
+    console.log(`✅ Browser pool initialized with ${this.browsers.length} browsers`);
+  }
+
+  async createBrowser() {
+    return await puppeteer.launch({ 
+      headless: true,
+      args: [
+        '--no-sandbox', 
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-web-security',
+        '--disable-images',
+        '--disable-javascript', // Only if site doesn't need JS
+        '--disable-css',
+        '--disable-plugins',
+        '--disable-extensions',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-default-apps',
+        '--disable-translate',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--disable-features=TranslateUI',
+        '--disable-ipc-flooding-protection'
+      ]
+    });
+  }
+
+  getBrowser() {
+    const browser = this.browsers[this.currentIndex];
+    this.currentIndex = (this.currentIndex + 1) % this.browsers.length;
+    return browser;
+  }
+
+  async close() {
+    console.log('🔧 Closing browser pool...');
+    await Promise.all(this.browsers.map(browser => browser.close()));
+    console.log('✅ Browser pool closed');
+  }
+}
 
 // --- Helper: Set session cookie ---
 export async function setSessionCookie(page) {
@@ -22,7 +139,6 @@ export async function setSessionCookie(page) {
     }
   ];
 
-  // Add Laravel session cookie if available
   if (process.env.LARAVEL_SESSION_COOKIE) {
     cookies.push({
       name: 'laravel_session',
@@ -37,343 +153,344 @@ export async function setSessionCookie(page) {
   await page.setCookie(...cookies);
 }
 
-// --- Helper: Get customer IDs from cart page ---
-async function getCartCustomerIds(page) {
-  const url = `${BASE_URL}/customer_cart`;
-  await page.goto(url, { waitUntil: 'networkidle2' });
+// --- Helper: Setup optimized page ---
+async function setupPage(browser) {
+  const page = await browser.newPage();
+  await setSessionCookie(page);
   
-  // Wait for the customer cards to load
-  await page.waitForSelector('.row.gutters .col-xl-3', { timeout: 10000 });
+  // Optimize page settings
+  await page.setViewport({ width: 1280, height: 720 });
+  await page.setRequestInterception(true);
   
-  const customerIds = await page.$$eval('.row.gutters .col-xl-3 figure.user-card a', links => 
-    links.map(link => {
-      const href = link.getAttribute('href');
-      const match = href.match(/details\/(\d+)/);
-      return match ? match[1] : null;
-    }).filter(Boolean)
-  );
+  // Block unnecessary resources more aggressively
+  page.on('request', (req) => {
+    const resourceType = req.resourceType();
+    const url = req.url();
+    
+    if (
+      resourceType === 'image' || 
+      resourceType === 'stylesheet' || 
+      resourceType === 'font' ||
+      resourceType === 'media' ||
+      url.includes('google-analytics') ||
+      url.includes('facebook') ||
+      url.includes('twitter') ||
+      url.includes('.css') ||
+      url.includes('.jpg') ||
+      url.includes('.png') ||
+      url.includes('.gif')
+    ) {
+      req.abort();
+    } else {
+      req.continue();
+    }
+  });
   
-  console.log(`Found ${customerIds.length} customers on cart page`);
-  return customerIds;
+  // Set shorter timeouts
+  page.setDefaultTimeout(PAGE_TIMEOUT);
+  page.setDefaultNavigationTimeout(PAGE_TIMEOUT);
+  
+  return page;
 }
 
-// --- Helper: Get customer IDs from wishlist page ---
-async function getWishlistCustomerIds(page) {
-  const url = `${BASE_URL}/customer_wishlist`;
-  await page.goto(url, { waitUntil: 'networkidle2' });
-  
-  // Wait for the customer cards to load
-  await page.waitForSelector('.row.gutters .col-xl-3', { timeout: 10000 });
-  
-  const customerIds = await page.$$eval('.row.gutters .col-xl-3 figure.user-card a', links => 
-    links.map(link => {
-      const href = link.getAttribute('href');
-      const match = href.match(/details\/(\d+)/);
-      return match ? match[1] : null;
-    }).filter(Boolean)
-  );
-  
-  console.log(`Found ${customerIds.length} customers on wishlist page`);
-  return customerIds;
-}
+// --- Helper: Get customer IDs with caching ---
+const customerIdCache = new Map();
 
-// --- Helper: Get customer info from card ---
-async function getCustomerInfoFromCard(page, customerId, type) {
+async function getCustomerIds(page, type) {
+  const cacheKey = `${type}_ids`;
+  const cacheExpiry = 5 * 60 * 1000; // 5 minutes
+  
+  if (customerIdCache.has(cacheKey)) {
+    const cached = customerIdCache.get(cacheKey);
+    if (Date.now() - cached.timestamp < cacheExpiry) {
+      console.log(`📋 Using cached ${type} customer IDs (${cached.data.length} customers)`);
+      return cached.data;
+    }
+  }
+
+  console.log(`🔍 Fetching ${type} customer IDs...`);
   const url = `${BASE_URL}/customer_${type}`;
-  await page.goto(url, { waitUntil: 'networkidle2' });
   
-  // Wait for customer cards to load
-  await page.waitForSelector('.row.gutters .col-xl-3', { timeout: 10000 });
-  
-  // Get customer info from the card
-  const customerInfo = await page.evaluate((customerId, type) => {
-    const link = document.querySelector(`figure.user-card a[href="customer_${type}/details/${customerId}"]`);
-    if (!link) return null;
-    
-    const figure = link.closest('figure.user-card');
-    const name = figure.querySelector('h5')?.textContent?.trim() || '';
-    const phoneNumber = figure.querySelector('ul.list-group li:first-child')?.textContent?.trim() || '';
-    
-    return { name, phoneNumber };
-  }, customerId, type);
-  
-  return customerInfo;
-}
-
-// --- Scrape cart for a single customer ---
-export async function scrapeCartForCustomer(page, customerId) {
   try {
-    // Get customer info from the card first
-    const customerInfo = await getCustomerInfoFromCard(page, customerId, 'cart');
-    if (!customerInfo) {
-      console.warn(`Could not find customer card for ID ${customerId}`);
-      return null;
-    }
-
-    // Navigate to details page
-    const detailsUrl = `${BASE_URL}/customer_cart/details/${customerId}`;
-    await page.goto(detailsUrl, { waitUntil: 'networkidle2' });
-    
-    // Wait for the page to load and check if we're redirected to login
-    const isLoginPage = await page.evaluate(() => {
-      return document.querySelector('form[action*="login"]') !== null;
+    await page.goto(url, { 
+      waitUntil: 'domcontentloaded',
+      timeout: PAGE_TIMEOUT 
     });
-
-    if (isLoginPage) {
-      console.error('Session expired, please update the session cookie');
-      return null;
-    }
-
-    // Wait for table to load
-    await page.waitForSelector('.table-container', { timeout: 5000 });
     
-    // Check if table exists and has data
-    const tableExists = await page.$('table.custom-table tbody tr');
-    if (!tableExists) {
-      console.log(`No cart items found for customer ${customerId}`);
-      return {
-        customerId,
-        customerName: customerInfo.name,
-        customerNumber: customerInfo.phoneNumber,
-        cart: {
-          items: [],
-          lastUpdated: new Date()
-        }
-      };
-    }
+    await page.waitForSelector('.row.gutters .col-xl-3', { timeout: PAGE_TIMEOUT });
     
-    // Scrape the table data using $$eval
-    const cartItems = await page.$$eval('table.custom-table tbody tr', rows => 
-      rows.map(row => {
-        const cells = row.querySelectorAll('td');
-        if (cells.length < 6) return null;
-        
-        return {
-          productId: cells[3].textContent.trim(), // Using productCode as productId
-          name: cells[2].textContent.trim(),
-          price: parseFloat(cells[4].textContent.trim().replace(/[^0-9.]/g, '')) || 0,
-          quantity: Number(cells[0].textContent.trim()) || 1,
-          image: cells[1].querySelector('img')?.src || ''
-        };
+    const customerIds = await page.$$eval('.row.gutters .col-xl-3 figure.user-card a', links => 
+      links.map(link => {
+        const href = link.getAttribute('href');
+        const match = href.match(/details\/(\d+)/);
+        return match ? match[1] : null;
       }).filter(Boolean)
     );
     
-    return {
-      customerId,
-      customerName: customerInfo.name,
-      customerNumber: customerInfo.phoneNumber,
-      cart: {
-        items: cartItems,
-        lastUpdated: new Date()
-      }
-    };
+    // Cache the result
+    customerIdCache.set(cacheKey, {
+      data: customerIds,
+      timestamp: Date.now()
+    });
+    
+    console.log(`✅ Found ${customerIds.length} customers on ${type} page`);
+    return customerIds;
   } catch (error) {
-    console.error(`Error scraping cart for customer ${customerId}:`, error);
-    return null;
+    console.error(`❌ Error fetching ${type} customer IDs:`, error.message);
+    return [];
   }
 }
 
-// --- Scrape wishlist for a single customer ---
-export async function scrapeWishlistForCustomer(page, customerId) {
+// --- Optimized customer data scraper ---
+async function scrapeCustomerData(browser, customerId, type, retries = 2) {
+  let page;
   try {
-    // Get customer info from the card first
-    const customerInfo = await getCustomerInfoFromCard(page, customerId, 'wishlist');
-    if (!customerInfo) {
-      console.warn(`Could not find customer card for ID ${customerId}`);
-      return null;
-    }
-
-    // Navigate to details page
-    const detailsUrl = `${BASE_URL}/customer_wishlist/details/${customerId}`;
-    await page.goto(detailsUrl, { waitUntil: 'networkidle2' });
+    page = await setupPage(browser);
+    const detailsUrl = `${BASE_URL}/customer_${type}/details/${customerId}`;
     
-    // Wait for the page to load and check if we're redirected to login
-    const isLoginPage = await page.evaluate(() => {
-      return document.querySelector('form[action*="login"]') !== null;
+    await page.goto(detailsUrl, { 
+      waitUntil: 'domcontentloaded',
+      timeout: PAGE_TIMEOUT 
     });
+    
+    // Quick check for login redirect
+    const isLoginPage = await page.evaluate(() => 
+      document.querySelector('form[action*="login"]') !== null
+    );
 
     if (isLoginPage) {
-      console.error('Session expired, please update the session cookie');
-      return null;
+      throw new Error('Session expired');
     }
 
-    // Wait for table to load
-    await page.waitForSelector('.table-container', { timeout: 5000 });
-    
-    // Check if table exists and has data
-    const tableExists = await page.$('table.custom-table tbody tr');
-    if (!tableExists) {
-      console.log(`No wishlist items found for customer ${customerId}`);
+    // Get all data in one evaluation for efficiency
+    const result = await page.evaluate((customerId, type) => {
+      const customerName = document.querySelector('.page-header h1')?.textContent?.trim() || 
+                          document.querySelector('.breadcrumb-item.active')?.textContent?.trim() || '';
+      
+      const phoneNumber = document.querySelector('.customer-phone')?.textContent?.trim() || 
+                         document.querySelector('.phone-number')?.textContent?.trim() || '';
+
+      const tableRows = document.querySelectorAll('table.custom-table tbody tr');
+      const items = [];
+      
+      tableRows.forEach(row => {
+        const cells = row.querySelectorAll('td');
+        if (cells.length >= 4) {
+          const item = {
+            productId: cells[3]?.textContent?.trim() || '',
+            name: cells[2]?.textContent?.trim() || '',
+            price: parseFloat(cells[4]?.textContent?.trim()?.replace(/[^0-9.]/g, '')) || 0,
+            image: cells[1]?.querySelector('img')?.src || ''
+          };
+          
+          if (type === 'cart') {
+            item.quantity = Number(cells[0]?.textContent?.trim()) || 1;
+          }
+          
+          items.push(item);
+        }
+      });
+
       return {
         customerId,
-        customerName: customerInfo.name,
-        customerNumber: customerInfo.phoneNumber,
-        wishlist: {
-          items: [],
-          lastUpdated: new Date()
-        }
+        customerName,
+        customerNumber: phoneNumber,
+        items
       };
-    }
-    
-    // Scrape the table data using $$eval
-    const wishlistItems = await page.$$eval('table.custom-table tbody tr', rows => 
-      rows.map(row => {
-        const cells = row.querySelectorAll('td');
-        if (cells.length < 6) return null;
-        
-        return {
-          productId: cells[3].textContent.trim(), // Using productCode as productId
-          name: cells[2].textContent.trim(),
-          price: parseFloat(cells[4].textContent.trim().replace(/[^0-9.]/g, '')) || 0,
-          image: cells[1].querySelector('img')?.src || ''
-        };
-      }).filter(Boolean)
-    );
-    
+    }, customerId, type);
+
     return {
-      customerId,
-      customerName: customerInfo.name,
-      customerNumber: customerInfo.phoneNumber,
-      wishlist: {
-        items: wishlistItems,
+      ...result,
+      [type]: {
+        items: result.items,
         lastUpdated: new Date()
       }
     };
+    
   } catch (error) {
-    console.error(`Error scraping wishlist for customer ${customerId}:`, error);
+    if (retries > 0) {
+      console.log(`🔄 Retrying customer ${customerId} (${retries} retries left)`);
+      await delay(1000);
+      return await scrapeCustomerData(browser, customerId, type, retries - 1);
+    }
+    console.error(`❌ Failed to scrape ${type} for customer ${customerId}:`, error.message);
     return null;
+  } finally {
+    if (page) {
+      await page.close();
+    }
   }
 }
 
-// --- Scrape cart for customers ---
+// --- Batch processor with progress tracking ---
+async function processBatch(browserPool, customerIds, type, progress) {
+  const promises = customerIds.map(async (customerId) => {
+    const browser = browserPool.getBrowser();
+    const result = await scrapeCustomerData(browser, customerId, type);
+    progress.update(result !== null);
+    return result;
+  });
+
+  return await Promise.all(promises);
+}
+
+// --- Main scraping functions ---
 export async function scrapeCartForCustomers(limit = null, specificCustomerId = null) {
-  const browser = await puppeteer.launch({ 
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
+  const browserPool = new BrowserPool();
   
   try {
-    const page = await browser.newPage();
-    await setSessionCookie(page);
+    await browserPool.initialize();
     
-    let ids;
+    let customerIds;
     if (specificCustomerId) {
-      ids = [specificCustomerId];
+      customerIds = [specificCustomerId];
     } else {
-      const allIds = await getCartCustomerIds(page);
-      ids = limit ? allIds.slice(0, limit) : allIds;
+      const page = await setupPage(browserPool.getBrowser());
+      customerIds = await getCustomerIds(page, 'cart');
+      await page.close();
+      
+      if (limit) customerIds = customerIds.slice(0, limit);
     }
+
+    console.log(`🛒 Starting cart scraping for ${customerIds.length} customers`);
+    const progress = new ProgressTracker(customerIds.length, 'Cart Scraping');
     
-    console.log(`Scraping cart for ${ids.length} customers...`);
     const results = [];
     
-    for (let i = 0; i < ids.length; i++) {
-      const customerId = ids[i];
-      console.log(`Processing customer ${i + 1}/${ids.length}: ${customerId}`);
+    // Process in batches
+    for (let i = 0; i < customerIds.length; i += BATCH_SIZE) {
+      const batch = customerIds.slice(i, i + BATCH_SIZE);
+      console.log(`📦 Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(customerIds.length / BATCH_SIZE)} (${batch.length} customers)`);
       
-      const data = await scrapeCartForCustomer(page, customerId);
-      if (data) {
-        results.push(data);
+      const batchResults = await processBatch(browserPool, batch, 'cart', progress);
+      results.push(...batchResults.filter(result => result !== null));
+      
+      // Small delay between batches to prevent overwhelming the server
+      if (i + BATCH_SIZE < customerIds.length) {
+        await delay(DELAY_BETWEEN_BATCHES);
       }
-      
-      await delay(1000);
     }
     
-    console.log(`Successfully scraped cart data for ${results.length} customers`);
+    progress.finish();
     return results;
+    
   } finally {
-    await browser.close();
+    await browserPool.close();
   }
 }
 
-// --- Scrape wishlist for customers ---
 export async function scrapeWishlistForCustomers(limit = null, specificCustomerId = null) {
-  const browser = await puppeteer.launch({ 
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
+  const browserPool = new BrowserPool();
   
   try {
-    const page = await browser.newPage();
-    await setSessionCookie(page);
+    await browserPool.initialize();
     
-    let ids;
+    let customerIds;
     if (specificCustomerId) {
-      ids = [specificCustomerId];
+      customerIds = [specificCustomerId];
     } else {
-      const allIds = await getWishlistCustomerIds(page);
-      ids = limit ? allIds.slice(0, limit) : allIds;
+      const page = await setupPage(browserPool.getBrowser());
+      customerIds = await getCustomerIds(page, 'wishlist');
+      await page.close();
+      
+      if (limit) customerIds = customerIds.slice(0, limit);
     }
+
+    console.log(`💝 Starting wishlist scraping for ${customerIds.length} customers`);
+    const progress = new ProgressTracker(customerIds.length, 'Wishlist Scraping');
     
-    console.log(`Scraping wishlist for ${ids.length} customers...`);
     const results = [];
     
-    for (let i = 0; i < ids.length; i++) {
-      const customerId = ids[i];
-      console.log(`Processing customer ${i + 1}/${ids.length}: ${customerId}`);
+    for (let i = 0; i < customerIds.length; i += BATCH_SIZE) {
+      const batch = customerIds.slice(i, i + BATCH_SIZE);
+      console.log(`📦 Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(customerIds.length / BATCH_SIZE)} (${batch.length} customers)`);
       
-      const data = await scrapeWishlistForCustomer(page, customerId);
-      if (data) {
-        results.push(data);
+      const batchResults = await processBatch(browserPool, batch, 'wishlist', progress);
+      results.push(...batchResults.filter(result => result !== null));
+      
+      if (i + BATCH_SIZE < customerIds.length) {
+        await delay(DELAY_BETWEEN_BATCHES);
       }
-      
-      await delay(1000);
     }
     
-    console.log(`Successfully scraped wishlist data for ${results.length} customers`);
+    progress.finish();
     return results;
+    
   } finally {
-    await browser.close();
+    await browserPool.close();
   }
 }
 
-// --- Combined scraper for both cart and wishlist ---
 export async function scrapeBothForCustomers(customerIds = null, limit = null) {
-  const browser = await puppeteer.launch({ 
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
+  const browserPool = new BrowserPool();
   
   try {
-    const page = await browser.newPage();
-    await setSessionCookie(page);
+    await browserPool.initialize();
     
     let ids;
-    
     if (customerIds && Array.isArray(customerIds)) {
       ids = customerIds;
     } else {
-      console.log('Getting all customer IDs...');
-      const allIds = await getAllCustomerIds(page);
+      console.log('🔍 Fetching customer IDs from both pages...');
+      const page1 = await setupPage(browserPool.getBrowser());
+      const page2 = await setupPage(browserPool.getBrowser());
+      
+      const [cartIds, wishlistIds] = await Promise.all([
+        getCustomerIds(page1, 'cart'),
+        getCustomerIds(page2, 'wishlist')
+      ]);
+      
+      await Promise.all([page1.close(), page2.close()]);
+      
+      const allIds = [...new Set([...cartIds, ...wishlistIds])];
       ids = limit ? allIds.slice(0, limit) : allIds;
     }
+
+    console.log(`🔄 Starting combined scraping for ${ids.length} customers`);
+    const progress = new ProgressTracker(ids.length, 'Combined Scraping');
     
-    console.log(`Scraping both cart and wishlist for ${ids.length} customers...`);
     const results = [];
     
-    for (let i = 0; i < ids.length; i++) {
-      const customerId = ids[i];
-      console.log(`Processing customer ${i + 1}/${ids.length}: ${customerId}`);
+    for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+      const batch = ids.slice(i, i + BATCH_SIZE);
+      console.log(`📦 Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(ids.length / BATCH_SIZE)} (${batch.length} customers)`);
       
-      const cartData = await scrapeCartForCustomer(page, customerId);
-      const wishlistData = await scrapeWishlistForCustomer(page, customerId);
+      const batchPromises = batch.map(async (customerId) => {
+        const browser1 = browserPool.getBrowser();
+        const browser2 = browserPool.getBrowser();
+        
+        const [cartData, wishlistData] = await Promise.all([
+          scrapeCustomerData(browser1, customerId, 'cart'),
+          scrapeCustomerData(browser2, customerId, 'wishlist')
+        ]);
+        
+        progress.update(cartData !== null || wishlistData !== null);
+        
+        if (cartData && wishlistData) {
+          return {
+            customerId: cartData.customerId,
+            customerName: cartData.customerName || wishlistData.customerName,
+            customerNumber: cartData.customerNumber || wishlistData.customerNumber,
+            cart: cartData.cart,
+            wishlist: wishlistData.wishlist
+          };
+        }
+        
+        return cartData || wishlistData;
+      });
       
-      if (cartData && wishlistData) {
-        // Combine the data
-        const combinedData = {
-          ...cartData,
-          wishlist: wishlistData.wishlist
-        };
-        results.push(combinedData);
+      const batchResults = await Promise.all(batchPromises);
+      results.push(...batchResults.filter(result => result !== null));
+      
+      if (i + BATCH_SIZE < ids.length) {
+        await delay(DELAY_BETWEEN_BATCHES);
       }
-      
-      // Add a small delay to avoid overwhelming the server
-      await page.waitForTimeout(1000);
     }
     
-    console.log(`Successfully scraped combined data for ${results.length} customers`);
+    progress.finish();
     return results;
+    
   } finally {
-    await browser.close();
+    await browserPool.close();
   }
 }
