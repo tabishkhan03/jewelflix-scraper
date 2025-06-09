@@ -2,12 +2,54 @@
 
 A Node.js application for scraping customer cart and wishlist data from Jewelflix.
 
+## GitHub Repository
+
+The source code is available on GitHub:
+[tabishkhan03/jewelflix-scraper](https://github.com/tabishkhan03/jewelflix-scraper)
+
 ## Docker Image
 
 The application is available as a Docker image on Docker Hub:
 [tabishkhan03/jewelflix-scraper](https://hub.docker.com/r/tabishkhan03/jewelflix-scraper)
 
-## Quick Start
+## Running Locally
+
+1. Clone the repository:
+```bash
+git clone https://github.com/tabishkhan03/jewelflix-scraper.git
+cd jewelflix-scraper
+```
+
+2. Install dependencies:
+```bash
+npm install
+```
+
+3. Create a `.env` file with your configuration (see Environment Variables section below)
+
+4. Start MongoDB (if not already running):
+```bash
+# On Windows
+net start MongoDB
+
+# On macOS/Linux
+sudo service mongod start
+# or
+mongod --dbpath /path/to/data/directory
+```
+
+5. Run the application:
+```bash
+# Development mode with auto-reload
+npm run dev
+
+# Production mode
+npm start
+```
+
+The application will be available at http://localhost:3000
+
+## Quick Start (Docker)
 
 1. Pull the Docker image:
 ```bash
@@ -131,8 +173,8 @@ curl -X POST http://localhost:3000/api/trigger-sequence
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/jewflix-scraper.git
-cd jewflix-scraper
+git clone https://github.com/tabishkhan03/jewelflix-scraper.git
+cd jewelflix-scraper
 ```
 
 2. Build the Docker image:
@@ -159,4 +201,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Author
 
-[Tabish Khan](https://github.com/tabishkhan03) 
+[Tabish Khan](https://github.com/tabishkhan03)
