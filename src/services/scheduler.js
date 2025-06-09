@@ -34,8 +34,8 @@ async function executeSequence() {
 
 // Initialize the scheduler
 export function initializeScheduler() {
-  // Schedule to run at 2 AM every day
-  cron.schedule('0 2 * * *', async () => {
+  // Schedule to run at 6 PM every day
+  cron.schedule('0 18 * * *', async () => {
     console.log('⏰ Running scheduled sequence...');
     try {
       await executeSequence();
@@ -44,7 +44,7 @@ export function initializeScheduler() {
     }
   });
 
-  console.log('📅 Scheduler initialized - Will run daily at 2 AM');
+  console.log('📅 Scheduler initialized - Will run daily at 6 PM');
 }
 
 // Function to manually trigger the sequence

@@ -28,14 +28,11 @@ RUN npm install
 # Copy source code
 COPY . .
 
-# Build the application
-RUN npm run build
-
 # Create startup script
 RUN echo '#!/bin/bash\n\
 mongod --bind_ip_all --fork --logpath /var/log/mongodb.log\n\
 sleep 5\n\
-node dist/index.js\n\
+node src/index.js\n\
 ' > /app/start.sh && chmod +x /app/start.sh
 
 # Expose ports
