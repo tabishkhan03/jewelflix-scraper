@@ -158,6 +158,16 @@ router.use((req, res, next) => {
   next();
 });
 
+// Add connection timeout middleware
+const timeoutMiddleware = (req, res, next) => {
+  req.setTimeout(300000); // 5 minutes
+  res.setTimeout(300000);
+  next();
+};
+
+// Apply timeout middleware to all routes
+router.use(timeoutMiddleware);
+
 // GET /api/cart?limit=5
 router.get('/cart', async (req, res) => {
   const monitor = new PerformanceMonitor('Cart Scraping API');
@@ -447,6 +457,48 @@ router.get('/customers/all/both', async (req, res) => {
   }
 });
 
+// POST /api/customers/all/both - Trigger combined scraping for all customers
+router.post('/customers/all/both', async (req, res) => {
+  const monitor = new PerformanceMonitor('All Customers Combined (POST)');
+  
+  try {
+    const limit = req.query.limit ? parseInt(req.query.limit) : null;
+    
+    console.log(`🔄 Starting combined scraping for ${limit || 'all'} customers...`);
+    const combinedData = await scrapeBothForCustomers(null, limit);
+    
+    // Batch update database with both types
+    const dbStats = await batchUpdateBothTypes(combinedData);
+    const apiStats = monitor.finish(combinedData.length);
+    
+    res.json({
+      success: true,
+      message: 'All customers data (cart & wishlist) updated successfully',
+      data: combinedData,
+      stats: {
+        totalCustomers: combinedData.length,
+        scraping: {
+          duration: `${apiStats.duration}ms`,
+          itemsPerSecond: apiStats.itemsPerSecond
+        },
+        database: {
+          duration: `${dbStats?.duration || 0}ms`,
+          itemsPerSecond: dbStats?.itemsPerSecond || 0
+        },
+        memory: apiStats.memoryUsage
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error scraping combined data:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message,
+      duration: `${Date.now() - monitor.startTime}ms`,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // GET /api/health - Health check endpoint with system info
 router.get('/health', (req, res) => {
   const memoryUsage = process.memoryUsage();
@@ -513,24 +565,56 @@ router.post('/trigger-sequence', async (req, res) => {
   const monitor = new PerformanceMonitor('Manual Sequence Trigger');
   
   try {
-    const result = await triggerSequence();
+    console.log('🔄 Starting manual sequence trigger...');
+    
+    // Step 1: Scrape cart data
+    console.log('🛒 Scraping cart data...');
+    const cartData = await scrapeCartForCustomers(null);
+    await batchUpdateCustomers(cartData, 'cart');
+    
+    // Step 2: Scrape wishlist data
+    console.log('💝 Scraping wishlist data...');
+    const wishlistData = await scrapeWishlistForCustomers(null);
+    await batchUpdateCustomers(wishlistData, 'wishlist');
+    
+    // Step 3: Scrape combined data
+    console.log('🔄 Scraping combined data...');
+    const combinedData = await scrapeBothForCustomers(null);
+    await batchUpdateBothTypes(combinedData);
+    
     const stats = monitor.finish(1);
     
     res.json({
-      success: result.success,
-      message: result.message,
+      success: true,
+      message: 'Sequence executed successfully',
       stats: {
         duration: `${stats.duration}ms`,
         memory: stats.memoryUsage
-      }
+      },
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('❌ Error triggering sequence:', error);
     res.status(500).json({ 
+      success: false,
       error: error.message,
-      duration: `${Date.now() - monitor.startTime}ms`
+      duration: `${Date.now() - monitor.startTime}ms`,
+      timestamp: new Date().toISOString()
     });
   }
 });
+
+// Add error handling middleware
+const errorHandler = (err, req, res, next) => {
+  console.error('❌ Route Error:', err);
+  res.status(500).json({
+    success: false,
+    error: err.message || 'Internal Server Error',
+    timestamp: new Date().toISOString()
+  });
+};
+
+// Apply error handler to all routes
+router.use(errorHandler);
 
 export default router;

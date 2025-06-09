@@ -21,7 +21,7 @@ async function executeSequence() {
 
     // Step 3: Call /api/customers/all/both
     console.log('🔄 Calling /api/customers/all/both...');
-    await axios.get(`${BASE_URL}/customers/all/both`);
+    await axios.post(`${BASE_URL}/customers/all/both`);
     console.log('✅ Combined API completed');
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);

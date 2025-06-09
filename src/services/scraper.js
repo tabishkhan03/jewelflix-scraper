@@ -277,22 +277,32 @@ async function getCustomerIds(page, type) {
     
     await page.waitForSelector('.row.gutters .col-xl-3', { timeout: PAGE_TIMEOUT });
     
-    const customerIds = await page.$$eval('.row.gutters .col-xl-3 figure.user-card a', links => 
-      links.map(link => {
-        const href = link.getAttribute('href');
+    const customerData = await page.$$eval('.row.gutters .col-xl-3 figure.user-card', cards => 
+      cards.map(card => {
+        const link = card.querySelector('a');
+        const href = link?.getAttribute('href') || '';
         const match = href.match(/details\/(\d+)/);
-        return match ? match[1] : null;
-      }).filter(Boolean)
+        const customerId = match ? match[1] : null;
+        
+        const customerName = card.querySelector('h5')?.textContent?.trim() || '';
+        const customerNumber = card.querySelector('.list-group-item')?.textContent?.trim() || '';
+        
+        return {
+          customerId,
+          customerName,
+          customerNumber
+        };
+      }).filter(data => data.customerId !== null)
     );
     
     // Cache the result
     customerIdCache.set(cacheKey, {
-      data: customerIds,
+      data: customerData,
       timestamp: Date.now()
     });
     
-    console.log(`✅ Found ${customerIds.length} customers on ${type} page`);
-    return customerIds;
+    console.log(`✅ Found ${customerData.length} customers on ${type} page`);
+    return customerData;
   } catch (error) {
     console.error(`❌ Error fetching ${type} customer IDs:`, error.message);
     return [];
@@ -300,7 +310,7 @@ async function getCustomerIds(page, type) {
 }
 
 // --- Optimized customer data scraper with better error handling ---
-async function scrapeCustomerData(browser, customerId, type, retries = 2) {
+async function scrapeCustomerData(browser, customerId, type, initialData = null, retries = 2) {
   let page;
   try {
     page = await setupPage(browser);
@@ -322,12 +332,6 @@ async function scrapeCustomerData(browser, customerId, type, retries = 2) {
 
     // Get all data in one evaluation for efficiency
     const result = await page.evaluate((customerId, type) => {
-      const customerName = document.querySelector('.page-header h1')?.textContent?.trim() || 
-                          document.querySelector('.breadcrumb-item.active')?.textContent?.trim() || '';
-      
-      const phoneNumber = document.querySelector('.customer-phone')?.textContent?.trim() || 
-                         document.querySelector('.phone-number')?.textContent?.trim() || '';
-
       const tableRows = document.querySelectorAll('table.custom-table tbody tr');
       const items = [];
       
@@ -351,14 +355,14 @@ async function scrapeCustomerData(browser, customerId, type, retries = 2) {
 
       return {
         customerId,
-        customerName,
-        customerNumber: phoneNumber,
         items
       };
     }, customerId, type);
 
     return {
-      ...result,
+      customerId: result.customerId,
+      customerName: initialData?.customerName || '',
+      customerNumber: initialData?.customerNumber || '',
       [type]: {
         items: result.items,
         lastUpdated: new Date()
@@ -369,7 +373,7 @@ async function scrapeCustomerData(browser, customerId, type, retries = 2) {
     if (retries > 0 && !error.message.includes('Protocol error')) {
       console.log(`🔄 Retrying customer ${customerId} (${retries} retries left)`);
       await delay(1000);
-      return await scrapeCustomerData(browser, customerId, type, retries - 1);
+      return await scrapeCustomerData(browser, customerId, type, initialData, retries - 1);
     }
     console.error(`❌ Failed to scrape ${type} for customer ${customerId}:`, error.message);
     return null;
@@ -406,35 +410,51 @@ export async function scrapeCartForCustomers(limit = null, specificCustomerId = 
   try {
     await browserPool.initialize();
     
-    let customerIds;
+    let customerData;
     if (specificCustomerId) {
-      customerIds = [specificCustomerId];
+      customerData = [{ customerId: specificCustomerId }];
     } else {
       const page = await setupPage(browserPool.getBrowser());
       try {
-        customerIds = await getCustomerIds(page, 'cart');
+        customerData = await getCustomerIds(page, 'cart');
       } finally {
         await safeClosePage(page);
       }
       
-      if (limit) customerIds = customerIds.slice(0, limit);
+      if (limit) customerData = customerData.slice(0, limit);
     }
 
-    console.log(`🛒 Starting cart scraping for ${customerIds.length} customers`);
-    const progress = new ProgressTracker(customerIds.length, 'Cart Scraping');
+    console.log(`🛒 Starting cart scraping for ${customerData.length} customers`);
+    const progress = new ProgressTracker(customerData.length, 'Cart Scraping');
     
     const results = [];
     
     // Process in batches
-    for (let i = 0; i < customerIds.length; i += BATCH_SIZE) {
-      const batch = customerIds.slice(i, i + BATCH_SIZE);
-      console.log(`📦 Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(customerIds.length / BATCH_SIZE)} (${batch.length} customers)`);
+    for (let i = 0; i < customerData.length; i += BATCH_SIZE) {
+      const batch = customerData.slice(i, i + BATCH_SIZE);
+      console.log(`📦 Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(customerData.length / BATCH_SIZE)} (${batch.length} customers)`);
       
-      const batchResults = await processBatch(browserPool, batch, 'cart', progress);
-      results.push(...batchResults);
+      const batchPromises = batch.map(async (data) => {
+        try {
+          const result = await scrapeCustomerData(browserPool.getBrowser(), data.customerId, 'cart', data);
+          progress.update(result !== null);
+          return result;
+        } catch (error) {
+          console.error(`❌ Error processing customer ${data.customerId}:`, error.message);
+          progress.update(false);
+          return null;
+        }
+      });
+      
+      const batchResults = await Promise.allSettled(batchPromises);
+      const validResults = batchResults
+        .filter(result => result.status === 'fulfilled' && result.value !== null)
+        .map(result => result.value);
+      
+      results.push(...validResults);
       
       // Small delay between batches to prevent overwhelming the server
-      if (i + BATCH_SIZE < customerIds.length) {
+      if (i + BATCH_SIZE < customerData.length) {
         await delay(DELAY_BETWEEN_BATCHES);
       }
     }
@@ -453,33 +473,49 @@ export async function scrapeWishlistForCustomers(limit = null, specificCustomerI
   try {
     await browserPool.initialize();
     
-    let customerIds;
+    let customerData;
     if (specificCustomerId) {
-      customerIds = [specificCustomerId];
+      customerData = [{ customerId: specificCustomerId }];
     } else {
       const page = await setupPage(browserPool.getBrowser());
       try {
-        customerIds = await getCustomerIds(page, 'wishlist');
+        customerData = await getCustomerIds(page, 'wishlist');
       } finally {
         await safeClosePage(page);
       }
       
-      if (limit) customerIds = customerIds.slice(0, limit);
+      if (limit) customerData = customerData.slice(0, limit);
     }
 
-    console.log(`💝 Starting wishlist scraping for ${customerIds.length} customers`);
-    const progress = new ProgressTracker(customerIds.length, 'Wishlist Scraping');
+    console.log(`💝 Starting wishlist scraping for ${customerData.length} customers`);
+    const progress = new ProgressTracker(customerData.length, 'Wishlist Scraping');
     
     const results = [];
     
-    for (let i = 0; i < customerIds.length; i += BATCH_SIZE) {
-      const batch = customerIds.slice(i, i + BATCH_SIZE);
-      console.log(`📦 Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(customerIds.length / BATCH_SIZE)} (${batch.length} customers)`);
+    for (let i = 0; i < customerData.length; i += BATCH_SIZE) {
+      const batch = customerData.slice(i, i + BATCH_SIZE);
+      console.log(`📦 Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(customerData.length / BATCH_SIZE)} (${batch.length} customers)`);
       
-      const batchResults = await processBatch(browserPool, batch, 'wishlist', progress);
-      results.push(...batchResults);
+      const batchPromises = batch.map(async (data) => {
+        try {
+          const result = await scrapeCustomerData(browserPool.getBrowser(), data.customerId, 'wishlist', data);
+          progress.update(result !== null);
+          return result;
+        } catch (error) {
+          console.error(`❌ Error processing customer ${data.customerId}:`, error.message);
+          progress.update(false);
+          return null;
+        }
+      });
       
-      if (i + BATCH_SIZE < customerIds.length) {
+      const batchResults = await Promise.allSettled(batchPromises);
+      const validResults = batchResults
+        .filter(result => result.status === 'fulfilled' && result.value !== null)
+        .map(result => result.value);
+      
+      results.push(...validResults);
+      
+      if (i + BATCH_SIZE < customerData.length) {
         await delay(DELAY_BETWEEN_BATCHES);
       }
     }
