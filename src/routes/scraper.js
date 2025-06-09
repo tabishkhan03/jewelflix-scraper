@@ -1,5 +1,6 @@
 import express from 'express';
 import { scrapeCartForCustomers, scrapeWishlistForCustomers, scrapeBothForCustomers } from '../services/scraper.js';
+import { triggerSequence } from '../services/scheduler.js';
 import Customer from '../models/Customer.js';
 
 const router = express.Router();
@@ -504,6 +505,31 @@ router.get('/stats', async (req, res) => {
   } catch (error) {
     console.error('❌ Error getting stats:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/trigger-sequence - Manually trigger the sequence
+router.post('/trigger-sequence', async (req, res) => {
+  const monitor = new PerformanceMonitor('Manual Sequence Trigger');
+  
+  try {
+    const result = await triggerSequence();
+    const stats = monitor.finish(1);
+    
+    res.json({
+      success: result.success,
+      message: result.message,
+      stats: {
+        duration: `${stats.duration}ms`,
+        memory: stats.memoryUsage
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error triggering sequence:', error);
+    res.status(500).json({ 
+      error: error.message,
+      duration: `${Date.now() - monitor.startTime}ms`
+    });
   }
 });
 

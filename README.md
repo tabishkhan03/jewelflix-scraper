@@ -2,179 +2,160 @@
 
 A Node.js application for scraping customer cart and wishlist data from Jewelflix.
 
+## Docker Image
+
+The application is available as a Docker image on Docker Hub:
+[tabishkhan03/jewelflix-scraper](https://hub.docker.com/r/tabishkhan03/jewelflix-scraper)
+
+## Quick Start
+
+1. Pull the Docker image:
+```bash
+docker pull tabishkhan03/jewelflix-scraper
+```
+
+2. Create a `.env` file with your configuration:
+```env
+# Server Configuration
+PORT=3000
+NODE_ENV=production
+
+# MongoDB Configuration
+MONGODB_URI=mongodb://localhost:27017/jewflix
+
+# API Configuration
+API_BASE_URL=http://localhost:3000/api
+
+# Session Cookies (Required)
+SESSION_COOKIE=your_session_cookie_here
+LARAVEL_SESSION_COOKIE=your_laravel_session_cookie_here
+LARAVEL_SESSION_COOKIE_NAME=your_laravel_session_cookie_name_here
+
+# Scraper Configuration
+SCRAPER_BATCH_SIZE=50
+MAX_CONCURRENT_PAGES=10
+DELAY_BETWEEN_BATCHES=100
+PAGE_TIMEOUT=10000
+DB_BATCH_SIZE=100
+```
+
+3. Run the container:
+```bash
+docker run -d \
+    --name jewflix-scraper \
+    -p 3000:3000 \
+    -p 27017:27017 \
+    -v $(pwd)/logs:/usr/src/app/logs \
+    -v mongodb_data:/data/db \
+    --env-file .env \
+    --restart unless-stopped \
+    tabishkhan03/jewelflix-scraper
+```
+
 ## Features
 
-- Scrape customer cart data
-- Scrape wishlist data
-- RESTful API endpoints
-- MongoDB integration for data storage
-- Puppeteer for web scraping
+- Scrapes customer cart and wishlist data
+- Runs scheduled tasks daily at 2 AM
+- Includes MongoDB database
+- Automatic restart on failure
+- Persistent storage for logs and data
+- Environment variable configuration
 
-## Prerequisites
+## API Endpoints
 
-- Node.js (v14 or higher)
-- MongoDB
-- npm or yarn
+- Health Check: `GET /api/health`
+- Stats: `GET /api/stats`
+- Cart Data: `GET /api/cart/all`
+- Wishlist Data: `GET /api/wishlist/all`
+- Combined Data: `GET /api/customers/all/both`
+- Manual Trigger: `POST /api/trigger-sequence`
 
-## Installation
+## Container Management
 
-1. Clone the repository:
+### View Logs
 ```bash
-git clone https://github.com/tabishkhan03/jewelflix-scraper.git
-cd jewelflix-scraper
+docker logs -f jewflix-scraper
 ```
 
-2. Install dependencies:
+### Stop Container
 ```bash
-npm install
+docker stop jewflix-scraper
 ```
 
-3. Create a `.env` file:
+### Start Container
 ```bash
-cp .sample.env .env
+docker start jewflix-scraper
 ```
 
-4. Update the `.env` file with your configuration values.
+### Restart Container
+```bash
+docker restart jewflix-scraper
+```
+
+### Remove Container
+```bash
+docker rm -f jewflix-scraper
+```
+
+## Scheduled Tasks
+
+The application automatically runs these tasks daily at 2 AM:
+1. Scrape cart data for all customers
+2. Scrape wishlist data for all customers
+3. Scrape combined data for all customers
+
+You can also manually trigger the sequence using:
+```bash
+curl -X POST http://localhost:3000/api/trigger-sequence
+```
 
 ## Environment Variables
 
-Create a `.env` file in the root directory with the following variables:
+| Variable | Description | Default |
+|----------|-------------|---------|
+| PORT | Server port | 3000 |
+| MONGODB_URI | MongoDB connection string | mongodb://localhost:27017/jewflix |
+| API_BASE_URL | Base URL for API | http://localhost:3000/api |
+| SESSION_COOKIE | Required for authentication | - |
+| LARAVEL_SESSION_COOKIE | Required for authentication | - |
+| LARAVEL_SESSION_COOKIE_NAME | Required for authentication | - |
+| SCRAPER_BATCH_SIZE | Number of customers to process in batch | 50 |
+| MAX_CONCURRENT_PAGES | Maximum concurrent browser pages | 10 |
+| DELAY_BETWEEN_BATCHES | Delay between batches in ms | 100 |
+| PAGE_TIMEOUT | Page load timeout in ms | 10000 |
+| DB_BATCH_SIZE | Database batch size | 100 |
 
-```env
-# MongoDB Connection
-MONGODB_URI=mongodb://localhost:27017/jewelflix
+## Development
 
-# Session Configuration
-SESSION_COOKIE_NAME=your_session_cookie_name
-SESSION_COOKIE=your_session_cookie_value
-LARAVEL_SESSION_COOKIE_NAME=your_laravel_session_cookie_name
-LARAVEL_SESSION_COOKIE=your_laravel_session_cookie_value
+### Building from Source
 
-# Server Configuration
-PORT=3000
-
-# Scraper Configuration
-SCRAPER_BATCH_SIZE=100        # Process 100 customers in parallel
-MAX_CONCURRENT_PAGES=15       # Use 15 browser pages
-DELAY_BETWEEN_BATCHES=200     # 200ms delay between batches
-DB_BATCH_SIZE=150            # Database bulk operations size
-```
-
-### Environment Variables Description
-
-- `MONGODB_URI`: MongoDB connection string
-- `SESSION_COOKIE_NAME`: Name of the session cookie
-- `SESSION_COOKIE`: Value of the session cookie
-- `LARAVEL_SESSION_COOKIE_NAME`: Name of the Laravel session cookie
-- `LARAVEL_SESSION_COOKIE`: Value of the Laravel session cookie
-- `PORT`: Server port number
-- `SCRAPER_BATCH_SIZE`: Number of customers to process in parallel
-- `MAX_CONCURRENT_PAGES`: Maximum number of concurrent browser pages
-- `DELAY_BETWEEN_BATCHES`: Delay in milliseconds between batch processing
-- `DB_BATCH_SIZE`: Size of database bulk operations
-
-## Usage
-
-### Development Mode
+1. Clone the repository:
 ```bash
-npm run dev
+git clone https://github.com/yourusername/jewflix-scraper.git
+cd jewflix-scraper
 ```
 
-### Production Mode
+2. Build the Docker image:
 ```bash
-npm start
+docker build -t jewflix-scraper .
 ```
 
-### API Endpoints
-
-#### Cart Endpoints
-
-1. Get Limited Cart Data
+3. Run the container:
 ```bash
-GET /api/cart?limit=5
+docker run -d \
+    --name jewflix-scraper \
+    -p 3000:3000 \
+    -p 27017:27017 \
+    -v $(pwd)/logs:/usr/src/app/logs \
+    -v mongodb_data:/data/db \
+    --env-file .env \
+    --restart unless-stopped \
+    jewflix-scraper
 ```
-Fetches cart data for a specified number of users (e.g., 5 users)
-
-2. Get Customer Cart
-```bash
-GET /api/customer/:customerId/cart
-```
-Fetches cart items for a specific customer by their ID
-
-3. Get All Customers Cart
-```bash
-GET /api/customer/all/cart
-```
-Fetches cart data for all customers
-
-#### Wishlist Endpoints
-
-4. Get Limited Wishlist Data
-```bash
-GET /api/wishlist?limit=5
-```
-Fetches wishlist data for a specified number of users (e.g., 5 users)
-
-5. Get Customer Wishlist
-```bash
-GET /api/customer/:customerId/wishlist
-```
-Fetches wishlist items for a specific customer by their ID
-
-6. Get All Customers Wishlist
-```bash
-GET /api/customer/all/wishlist
-```
-Fetches wishlist data for all customers
-
-#### Combined Endpoint
-
-7. Get All Customers Cart and Wishlist
-```bash
-GET /api/customer/all/both
-```
-Fetches both cart and wishlist data for all customers
-
-#### Health Check
-```bash
-GET /health
-```
-Checks the health status of the API
-
-## Testing
-
-Run the test scraper:
-```bash
-npm test
-```
-
-Test cart endpoint:
-```bash
-npm run test:cart
-```
-
-Test wishlist endpoint:
-```bash
-npm run test:wishlist
-```
-
-Check health endpoint:
-```bash
-npm run health
-```
-
-## Dependencies
-
-- express: Web framework
-- mongoose: MongoDB ODM
-- puppeteer: Headless browser for web scraping
-- dotenv: Environment variable management
-- cors: Cross-origin resource sharing
-- nodemon: Development server with auto-reload
 
 ## License
 
-MIT
+This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Author
 

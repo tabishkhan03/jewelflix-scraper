@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: jewflix-scraper
+    ports:
+      - "3000:3000"
+      - "27017:27017"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - MONGODB_URI=mongodb://localhost:27017/jewflix
+      - API_BASE_URL=http://localhost:3000/api
+      - SESSION_COOKIE=${SESSION_COOKIE}
+      - LARAVEL_SESSION_COOKIE=${LARAVEL_SESSION_COOKIE}
+      - LARAVEL_SESSION_COOKIE_NAME=${LARAVEL_SESSION_COOKIE_NAME}
+      - SCRAPER_BATCH_SIZE=50
+      - MAX_CONCURRENT_PAGES=10
+      - DELAY_BETWEEN_BATCHES=100
+      - PAGE_TIMEOUT=10000
+      - DB_BATCH_SIZE=100
+    restart: unless-stopped
+    volumes:
+      - ./logs:/usr/src/app/logs
+      - mongodb_data:/data/db
+
+volumes:
+  mongodb_data: 
