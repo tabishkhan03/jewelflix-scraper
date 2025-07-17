@@ -36,7 +36,7 @@ async function executeSequence() {
 // Initialize the scheduler
 export function initializeScheduler() {
   // Schedule to run at 6 PM every day
-  cron.schedule('55 13 * * *', async () => {
+  cron.schedule('43 16 * * *', async () => {
     console.log('⏰ Running scheduled sequence...');
     try {
       await executeSequence();
