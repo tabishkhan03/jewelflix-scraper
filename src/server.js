@@ -1,9 +1,10 @@
+// src/server.js
 import express from 'express';
 import cors from 'cors';
-import mongoose from 'mongoose';
 import dotenv from 'dotenv';
+import connectDB from './config/database.js';
 import scraperRoutes from './routes/scraper.js';
-import { startScheduler } from './services/scheduler.js';
+import { initializeScheduler } from './services/scheduler.js';
 
 dotenv.config();
 
@@ -38,24 +39,15 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Connect to MongoDB with improved options
-mongoose.connect(process.env.MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-  serverSelectionTimeoutMS: 30000,
-  socketTimeoutMS: 45000,
-  connectTimeoutMS: 30000,
-  maxPoolSize: 50,
-  minPoolSize: 10,
-  keepAlive: true,
-  keepAliveInitialDelay: 300000
-})
-.then(() => {
-  console.log('✅ Connected to MongoDB');
+// Connect to MongoDB and start server
+connectDB().then(() => {
+  console.log('🔄 Starting server...');
   
   // Start the server with improved options
   const server = app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`🌐 API available at: http://localhost:${PORT}/api`);
+    console.log(`💊 Health check: http://localhost:${PORT}/api/health`);
   });
 
   // Configure server timeouts
@@ -64,10 +56,10 @@ mongoose.connect(process.env.MONGODB_URI, {
   server.headersTimeout = 300000;
 
   // Start the scheduler
-  startScheduler();
+  initializeScheduler();
 })
 .catch((error) => {
-  console.error('❌ MongoDB connection error:', error);
+  console.error('❌ Failed to start server:', error);
   process.exit(1);
 });
 

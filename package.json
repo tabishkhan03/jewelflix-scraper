@@ -8,6 +8,7 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "test": "node test-scraper.js",
+    "test:connection": "node test-connection.js",
     "test:cart": "curl -X POST http://localhost:3000/api/cart/limited -H 'Content-Type: application/json' -d '{\"customerIds\": [\"344507\"]}'",
     "test:wishlist": "curl -X POST http://localhost:3000/api/wishlist/limited -H 'Content-Type: application/json' -d '{\"limit\": 2}'",
     "health": "curl http://localhost:3000/health"
@@ -16,10 +17,11 @@
     "axios": "^1.9.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "mongoose": "^7.6.3",
+    "express": "^4.21.2",
+    "mongodb": "^6.17.0",
+    "mongoose": "^7.8.7",
     "node-cron": "^3.0.3",
-    "puppeteer": "^22.8.2"
+    "puppeteer": "^22.15.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"

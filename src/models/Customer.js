@@ -1,3 +1,4 @@
+// src/models/Customer.js
 import mongoose from 'mongoose';
 
 const customerSchema = new mongoose.Schema({

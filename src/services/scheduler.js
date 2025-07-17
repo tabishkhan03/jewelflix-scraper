@@ -1,3 +1,4 @@
+// src/services/scheduler.js
 import axios from 'axios';
 import cron from 'node-cron';
 
@@ -9,17 +10,17 @@ async function executeSequence() {
   const startTime = Date.now();
 
   try {
-    // Step 1: Call /api/cart/all
-    console.log('🛒 Calling /api/cart/all...');
-    await axios.get(`${BASE_URL}/cart/all`);
+    // Step 1: Call /api/cart (not /api/cart/all)
+    console.log('🛒 Calling /api/cart...');
+    await axios.get(`${BASE_URL}/cart`);
     console.log('✅ Cart API completed');
 
-    // Step 2: Call /api/wishlist/all
-    console.log('💝 Calling /api/wishlist/all...');
-    await axios.get(`${BASE_URL}/wishlist/all`);
+    // Step 2: Call /api/wishlist (not /api/wishlist/all)
+    console.log('💝 Calling /api/wishlist...');
+    await axios.get(`${BASE_URL}/wishlist`);
     console.log('✅ Wishlist API completed');
 
-    // Step 3: Call /api/customers/all/both
+    // Step 3: Call /api/customers/all/both (this was correct)
     console.log('🔄 Calling /api/customers/all/both...');
     await axios.post(`${BASE_URL}/customers/all/both`);
     console.log('✅ Combined API completed');
@@ -35,7 +36,7 @@ async function executeSequence() {
 // Initialize the scheduler
 export function initializeScheduler() {
   // Schedule to run at 6 PM every day
-  cron.schedule('0 18 * * *', async () => {
+  cron.schedule('55 13 * * *', async () => {
     console.log('⏰ Running scheduled sequence...');
     try {
       await executeSequence();

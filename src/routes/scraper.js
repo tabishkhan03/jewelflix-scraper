@@ -1,3 +1,4 @@
+// src/routes/scraper.js
 import express from 'express';
 import { scrapeCartForCustomers, scrapeWishlistForCustomers, scrapeBothForCustomers } from '../services/scraper.js';
 import { triggerSequence } from '../services/scheduler.js';
